@@ -1,5 +1,5 @@
 // Guarda o app para abrir mesmo sem internet. Os dados vêm sempre do servidor.
-const CACHE = 'sua-estante-v1';
+const CACHE = 'sua-estante-v2';
 const ARQUIVOS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icone-180.png', 'icons/icone-192.png', 'icons/icone-512.png'];
 

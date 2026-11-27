@@ -32,9 +32,10 @@ const deInputData = v => v ? new Date(v + 'T12:00:00').toISOString() : null;
 function quando(iso) {
   const s = (Date.now() - new Date(iso).getTime()) / 1000;
   if (s < 60) return 'agora';
-  if (s < 3600) return Math.floor(s / 60) + ' min';
-  if (s < 86400) return Math.floor(s / 3600) + ' h';
-  if (s < 86400 * 7) return Math.floor(s / 86400) + ' d';
+  if (s < 3600) return 'há ' + Math.floor(s / 60) + ' min';
+  if (s < 86400) return 'há ' + Math.floor(s / 3600) + ' h';
+  if (s < 86400 * 2) return 'ontem';
+  if (s < 86400 * 30) return 'há ' + Math.floor(s / 86400) + ' dias';
   return dataCurta(iso);
 }
 function corDe(texto) { let h = 0; for (const c of String(texto)) h = (h * 31 + c.charCodeAt(0)) | 0; return CORES_CAPA[Math.abs(h) % CORES_CAPA.length]; }
@@ -114,7 +115,7 @@ async function entrar(nome, senha, senhaGrupo) {
   guardarSessao(s);
   const ok = await http('POST', '/rest/v1/rpc/entrar_no_grupo', { senha: senhaGrupo, nome: nome.trim() });
   if (ok !== true) { sair(); throw new Error('Senha do grupo errada.'); }
-  conta.nome = nome.trim(); ls.set('conta', conta);
+  conta.nome = nome.trim(); conta.login = nome.trim(); ls.set('conta', conta);
 }
 function sair() { conta = null; livros = []; ls.del('conta'); ls.del('livros'); }
 
@@ -280,10 +281,18 @@ async function importarArquivo(arquivo, extra = {}) {
 
 // ---------------------------------------------------------------- amigos
 async function feed() {
-  const sel = 'id,user_id,titulo,autor,paginas,capa_url,status,gostei,atualizado_em,membros!leituras_user_id_fkey(nome),comentarios(count)';
-  return http('GET', `/rest/v1/leituras?select=${encodeURIComponent(sel)}&order=atualizado_em.desc&limit=150`);
+  const sel = 'id,user_id,titulo,autor,paginas,capa_url,status,gostei,atualizado_em,iniciado_em,terminado_em,adicionado_em,membros!leituras_user_id_fkey(nome),comentarios(count)';
+  return http('GET', `/rest/v1/leituras?select=${encodeURIComponent(sel)}&order=atualizado_em.desc&limit=1000`);
 }
 const nomeDe = o => o.membros?.nome || 'alguém';
+// quando aconteceu o que o card conta: começou, terminou ou guardou na lista
+const quandoDe = l => l.status === 'LIDO' ? (l.terminado_em || l.iniciado_em) : l.status === 'LENDO' ? l.iniciado_em : l.adicionado_em;
+function grupoDe(iso) {
+  if (!iso) return 'Antes';
+  const d = new Date(iso); const h = new Date(); h.setHours(0, 0, 0, 0);
+  const dias = (h - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000;
+  return dias <= 0 ? 'Hoje' : dias < 7 ? 'Esta semana' : dias < 31 ? 'Este mês' : 'Antes';
+}
 const contagem = a => (a && a[0] && a[0].count) || 0;
 
 // ---------------------------------------------------------------- mural
@@ -342,7 +351,7 @@ async function render() {
   app.className = '';
   const [rota, arg] = (location.hash.slice(1) || 'estante').split('/');
   if (!conta) { $('#abas').hidden = true; return telaEntrar(); }
-  const aba = { livro: 'estante', adicionar: 'estante', stats: 'estante', leitor: 'ler', acervo: 'ler', leitura: 'amigos', post: 'mural', 'novo-post': 'mural' }[rota] || rota;
+  const aba = { conta: 'amigos', pessoa: 'amigos', livro: 'estante', adicionar: 'estante', stats: 'estante', leitor: 'ler', acervo: 'ler', leitura: 'amigos', post: 'mural', 'novo-post': 'mural' }[rota] || rota;
   const tela = TELAS[rota] || TELAS.estante;
   if (rota === 'leitor') $('#abas').hidden = true; else desenharAbas(TELAS[rota] ? aba : 'estante');
   window.scrollTo(0, 0);
@@ -401,7 +410,7 @@ TELAS.estante = async () => {
       <p class="sub">${livros.length} ${livros.length === 1 ? 'livro' : 'livros'}</p>
       ${sec('LENDO')}${sec('QUERO_LER')}${sec('LIDO')}
       <div class="ornamento">❦</div>
-      <p style="text-align:center"><button class="link" data-acao="sair">sair da conta (${esc(conta.nome || '')})</button></p>`;
+      <p style="text-align:center"><button class="link" data-ir="conta">conta (${esc(conta.nome || '')})</button></p>`;
   };
   await desenhar();
   carregarLivros().then(() => { if (location.hash.slice(1) === 'estante' || !location.hash) desenhar(); }).catch(() => { });
@@ -672,20 +681,59 @@ async function abrirPdf(e) {
 }
 
 // ----- amigos
+let abaAmigos = 'novidades';
+let cacheAmigos = null;
+function itemLeitura(l, comNome) {
+  const verbo = { LENDO: 'começou', LIDO: 'terminou', QUERO_LER: 'quer ler' }[l.status] || '';
+  const q = quandoDe(l);
+  const topo = (comNome ? `${esc(nomeDe(l))} ${verbo}` : verbo.charAt(0).toUpperCase() + verbo.slice(1)) + (q ? ' · ' + quando(q) : '');
+  return `<button class="item" data-ir="leitura/${l.id}"><div class="mini">${capa(l)}</div>
+    <div class="txt"><div class="a" style="color:var(--vinho)">${topo}</div><div class="t">${esc(l.titulo)}</div><div class="a">${esc(l.autor)}</div></div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;color:var(--tinta-suave);font-size:13px">
+      ${l.gostei === true ? `<span style="width:20px">${icone('coracao', { cor: '#D79A9E', cheio: true })}</span>` : l.gostei === false ? `<span style="width:20px">${icone('dislike', { cor: '#8FA9C4', cheio: true })}</span>` : ''}
+      ${contagem(l.comentarios) ? `<span style="display:flex;gap:3px;align-items:center"><span style="width:15px;display:inline-block">${icone('balao')}</span>${contagem(l.comentarios)}</span>` : ''}</div></button>`;
+}
 TELAS.amigos = async () => {
-  app.innerHTML = `<div class="cab"><h1>Amigos</h1></div><p class="sub">O que o grupo anda lendo.</p><div id="feed"><p class="sub">Carregando…</p></div>`;
-  const lista = await feed();
-  const verbo = { LENDO: 'está lendo', LIDO: 'terminou', QUERO_LER: 'quer ler' };
-  $('#feed').innerHTML = lista.length ? lista.map(l => `<button class="cartao" data-ir="leitura/${l.id}">
-      <div class="mini">${capa(l)}</div><div style="flex:1;min-width:0">
-      <div class="quem">${esc(nomeDe(l))} ${verbo[l.status] || ''} · ${quando(l.atualizado_em)}</div>
-      <div class="t">${esc(l.titulo)}</div><div class="a" style="font-style:italic;color:var(--tinta-suave)">${esc(l.autor)}</div>
-      <div class="rodape">${l.gostei === true ? `<span style="width:18px">${icone('coracao', { cor: '#D79A9E', cheio: true })}</span>` : l.gostei === false ? `<span style="width:18px">${icone('dislike', { cor: '#8FA9C4', cheio: true })}</span>` : ''}
-      <span style="display:flex;gap:4px;align-items:center"><span style="width:16px;display:inline-block">${icone('balao')}</span>${contagem(l.comentarios)}</span></div></div></button>`).join('')
-    : '<p class="sub">Ninguém compartilhou leituras ainda.</p>';
+  app.innerHTML = `<div class="cab"><h1>Amigos</h1><button class="link" data-ir="conta">conta</button></div>
+    <div class="pilulas" style="margin-top:10px">${[['novidades', 'Novidades'], ['pessoas', 'Pessoas']].map(([k, t]) => `<button class="pilula ${abaAmigos === k ? 'ativa' : ''}" data-acao="aba-amigos" data-k="${k}">${t}</button>`).join('')}</div>
+    <div id="feed">${cacheAmigos ? '' : '<p class="sub">Carregando…</p>'}</div>`;
+  const desenhar = () => {
+    const { lista, membros } = cacheAmigos;
+    if (abaAmigos === 'novidades') {
+      const dos = lista.filter(l => l.user_id !== conta.uid).sort((a, b) => new Date(quandoDe(b) || 0) - new Date(quandoDe(a) || 0));
+      if (!dos.length) { $('#feed').innerHTML = '<p class="sub">Ainda não há nada dos seus amigos. Quando eles entrarem no grupo, o que começarem, terminarem ou quiserem ler aparece aqui.</p>'; return; }
+      $('#feed').innerHTML = ['Hoje', 'Esta semana', 'Este mês', 'Antes'].map(g => {
+        const doG = dos.filter(l => grupoDe(quandoDe(l)) === g);
+        return doG.length ? `<div class="secao" style="margin-top:14px"><h3>${g}</h3>${doG.map(l => itemLeitura(l, true)).join('')}</div>` : '';
+      }).join('');
+    } else {
+      const ordem = [...membros].sort((a, b) => (a.user_id !== conta.uid) - (b.user_id !== conta.uid) || a.nome.localeCompare(b.nome));
+      $('#feed').innerHTML = ordem.map(m => {
+        const dele = lista.filter(l => l.user_id === m.user_id);
+        const lendo = dele.filter(l => l.status === 'LENDO'); const lidos = dele.filter(l => l.status === 'LIDO').length;
+        return `<button class="item" data-ir="pessoa/${m.user_id}"><div style="width:46px;height:46px;border-radius:50%;background:${corDe(m.nome)};color:var(--papel);display:grid;place-items:center;font-family:var(--titulo);font-size:24px;flex:none">${esc(m.nome.charAt(0).toUpperCase())}</div>
+          <div class="txt"><div class="t">${esc(m.nome)}${m.user_id === conta.uid ? ' (você)' : ''}</div>
+          <div class="a">${lendo.length ? 'lendo ' + esc(lendo[0].titulo) + (lendo.length > 1 ? ' e mais ' + (lendo.length - 1) : '') : dele.length + (dele.length === 1 ? ' livro' : ' livros') + ' na estante'}</div>
+          <div class="m">${lidos} ${lidos === 1 ? 'lido' : 'lidos'} · ${lendo.length} lendo</div></div><span style="font-size:24px;color:var(--tinta-suave)">›</span></button>`;
+      }).join('') || '<p class="sub">Ninguém no grupo ainda.</p>';
+    }
+  };
+  if (cacheAmigos) desenhar();
+  const [lista, membros] = await Promise.all([feed(), http('GET', '/rest/v1/membros?select=user_id,nome&order=nome.asc')]);
+  cacheAmigos = { lista, membros };
+  if (location.hash.slice(1) === 'amigos') desenhar();
+};
+TELAS.pessoa = async uid => {
+  if (!cacheAmigos) { const [lista, membros] = await Promise.all([feed(), http('GET', '/rest/v1/membros?select=user_id,nome&order=nome.asc')]); cacheAmigos = { lista, membros }; }
+  const m = cacheAmigos.membros.find(x => x.user_id === uid);
+  const dele = cacheAmigos.lista.filter(l => l.user_id === uid);
+  app.innerHTML = cabInterno(uid === conta.uid ? 'Sua estante' : (m?.nome || 'Estante'), 'amigos') + (dele.length ? ['LENDO', 'QUERO_LER', 'LIDO'].map(st => {
+    const d = dele.filter(l => l.status === st).sort((a, b) => new Date(quandoDe(b) || 0) - new Date(quandoDe(a) || 0));
+    return d.length ? `<div class="secao" style="margin-top:10px"><h3>${STATUS[st].nome} · ${d.length}</h3>${d.map(l => itemLeitura(l, false)).join('')}</div>` : '';
+  }).join('') : '<p class="sub">A estante ainda está vazia.</p>');
 };
 TELAS.leitura = async id => {
-  app.innerHTML = cabInterno('Comentários', 'amigos') + '<div id="conteudo"><p class="sub">Carregando…</p></div>';
+  app.innerHTML = cabInterno('Conversa', 'amigos') + '<div id="conteudo"><p class="sub">Carregando…</p></div>';
   const sel = 'id,user_id,titulo,autor,capa_url,status,gostei,atualizado_em,membros!leituras_user_id_fkey(nome)';
   const [l] = await http('GET', `/rest/v1/leituras?id=eq.${id}&select=${encodeURIComponent(sel)}`);
   if (!l) return ir('amigos');
@@ -700,6 +748,32 @@ TELAS.leitura = async id => {
     ev.target.querySelector('button').disabled = true;
     try { await http('POST', '/rest/v1/comentarios', { leitura_id: Number(id), texto: t }, { extras: { Prefer: 'return=minimal' } }); render(); }
     catch (e) { aviso(e.message); ev.target.querySelector('button').disabled = false; }
+  };
+};
+
+// ----- conta
+TELAS.conta = async () => {
+  app.innerHTML = `${cabInterno('Conta', 'amigos')}
+    <div class="secao"><h3>Seu nome no grupo</h3>
+      <form id="f-nome"><label class="campo"><span>Nome</span><input name="nome" value="${esc(conta.nome || '')}" maxlength="40" required></label>
+      <p class="sub" style="font-size:14px;margin-top:-8px">É como os amigos veem você. Para entrar, continue usando “${esc(conta.login || conta.nome || '')}”.</p>
+      <button class="btn leve" type="submit">Salvar nome</button></form></div>
+    <div class="secao"><h3>Trocar senha</h3>
+      <form id="f-senha"><label class="campo"><span>Nova senha</span><input name="s1" type="password" minlength="6" autocomplete="new-password" required></label>
+      <label class="campo"><span>Repita a nova senha</span><input name="s2" type="password" minlength="6" autocomplete="new-password" required></label>
+      <button class="btn leve" type="submit">Trocar senha</button></form></div>
+    <div class="secao"><h3>Sair</h3><button class="link" data-acao="sair" style="color:var(--fita-lido)">sair da conta</button></div>`;
+  $('#f-nome').onsubmit = async ev => {
+    ev.preventDefault(); const n = new FormData(ev.target).get('nome').trim(); if (!n) return;
+    try {
+      await http('PATCH', `/rest/v1/membros?user_id=eq.${conta.uid}`, { nome: n }, { extras: { Prefer: 'return=minimal' } });
+      conta.login ||= conta.nome; conta.nome = n; ls.set('conta', conta); cacheAmigos = null; aviso('Nome trocado');
+    } catch (e) { aviso(e.message); }
+  };
+  $('#f-senha').onsubmit = async ev => {
+    ev.preventDefault(); const f = new FormData(ev.target);
+    if (f.get('s1') !== f.get('s2')) return aviso('As duas senhas estão diferentes.');
+    try { await http('PUT', '/auth/v1/user', { password: f.get('s1') }); ev.target.reset(); aviso('Senha trocada'); } catch (e) { aviso(e.message); }
   };
 };
 
@@ -862,6 +936,7 @@ const ACOES = {
     ls.set('leitor', p); leitorAtual?.aplicar(); ACOES.ajustes();
   },
   filtro(el) { filtroMural = el.dataset.f; render(); },
+  'aba-amigos'(el) { abaAmigos = el.dataset.k; render(); },
   async apoiar(el) {
     try {
       if (el.dataset.sim === 'true') await http('POST', '/rest/v1/mural_apoios', { post_id: Number(el.dataset.id) }, { extras: { Prefer: 'return=minimal,resolution=ignore-duplicates' } });
