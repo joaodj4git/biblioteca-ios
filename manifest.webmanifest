@@ -1,0 +1,15 @@
+{
+  "name": "Sua estante",
+  "short_name": "Sua estante",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F4ECDF",
+  "theme_color": "#F4ECDF",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icons/icone-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icone-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
